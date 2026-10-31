@@ -9,6 +9,8 @@ export default defineConfig({
       FRONTEND_ORIGIN: "http://localhost:3000",
       REPOMIND_API_URL: "http://repomind.test",
       NODE_ENV: "test",
+      // Never use the developer's real keys file in tests.
+      GROQ_KEYS_FILE: "tests/.no-groq-keys.json",
     },
     fileParallelism: false,
     hookTimeout: 120000,

@@ -72,4 +72,29 @@ describe("settings", () => {
 
     expect(res.status).toBe(400);
   });
+
+  it("saves several Groq keys, adds backups and clears them", async () => {
+    const { token } = await createUserAndToken({
+      stripSecrets: true,
+      username: "multikey",
+      email: "multikey@example.com",
+    });
+    const put = (body) => agent(app).put("/api/settings").set(authHeader(token)).send(body);
+    const get = () => agent(app).get("/api/settings").set(authHeader(token));
+
+    expect((await put({ groqKey: "gsk_first1111\ngsk_second2222" })).status).toBe(200);
+    expect((await put({ groqKey: "gsk_third3333, gsk_first1111" })).body.groqKeyCount).toBe(3);
+    const saved = await get();
+    expect(saved.body.groqKeys).toHaveLength(3);
+    expect(saved.body.groqKeys[2]).toMatch(/^•+3333$/);
+    expect(JSON.stringify(saved.body)).not.toContain("gsk_");
+
+    const { resolveCredentials } = await import("../services/credentials.js");
+    const User = (await import("../models/User.js")).default;
+    const user = await User.findOne({ username: "multikey" });
+    expect(resolveCredentials(user).groqKeys.slice(0, 3)).toEqual(["gsk_first1111", "gsk_second2222", "gsk_third3333"]);
+
+    expect((await put({ clearGroqKeys: true })).status).toBe(200);
+    expect((await get()).body.hasGroqKey).toBe(false);
+  });
 });

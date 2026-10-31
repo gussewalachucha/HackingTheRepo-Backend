@@ -1,6 +1,6 @@
 module.exports = {
   root: true,
-  ignorePatterns: ["node_modules/", "coverage/"],
+  ignorePatterns: ["node_modules/", "coverage/", "workspace/"],
   env: {
     es2021: true,
     node: true,

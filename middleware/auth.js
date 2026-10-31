@@ -3,13 +3,31 @@ import User from "../models/User.js";
 
 const getJwtSecret = () => process.env.JWT_SECRET || "secret";
 
-export const protect = async (req, res, next) => {
+export const AUTH_COOKIE = "rm_token";
+
+function readCookie(req, name) {
+  const header = req.headers.cookie;
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return decodeURIComponent(rest.join("="));
+  }
+  return null;
+}
+
+// Accept either an `Authorization: Bearer` header or the httpOnly session cookie.
+function getToken(req) {
   const auth = req.headers.authorization;
-  if (!auth || !auth.startsWith("Bearer ")) {
+  if (auth && auth.startsWith("Bearer ")) return auth.split(" ")[1];
+  return readCookie(req, AUTH_COOKIE);
+}
+
+export const protect = async (req, res, next) => {
+  const token = getToken(req);
+  if (!token) {
     return res.status(401).json({ message: "Not authorized", code: "UNAUTHORIZED" });
   }
   try {
-    const token = auth.split(" ")[1];
     const decoded = jwt.verify(token, getJwtSecret());
     req.user = await User.findById(decoded.id).select("-password");
     if (!req.user) {

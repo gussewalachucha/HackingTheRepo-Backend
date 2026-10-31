@@ -11,6 +11,7 @@ import jobRoutes from "./routes/jobs.js";
 import settingsRoutes from "./routes/settings.js";
 import assistantRoutes from "./routes/assistant.js";
 import { errorHandler } from "./middleware/errorHandler.js";
+import { recoverInterruptedJobs } from "./services/jobQueue.js";
 
 dotenv.config();
 
@@ -41,6 +42,8 @@ app.use(
     credentials: true,
   }),
 );
+// Job requests may carry attached images (up to 4 × 4 MB, base64 encoded).
+app.use("/api/jobs", express.json({ limit: "24mb" }));
 app.use(express.json({ limit: "1mb" }));
 
 const authLimiter = rateLimit({
@@ -62,7 +65,17 @@ const jobCreateLimiter = rateLimit({
 if (process.env.VITEST !== "true") {
   mongoose
     .connect(process.env.MONGO_URI || "mongodb://localhost:27017/repomind")
-    .then(() => console.log("✅ MongoDB connected"))
+    .then(async () => {
+      console.log("✅ MongoDB connected");
+      try {
+        const recovered = await recoverInterruptedJobs();
+        if (recovered) {
+          console.log(`↺ Marked ${recovered} interrupted job(s) as failed`);
+        }
+      } catch (err) {
+        console.error("❌ Job recovery failed:", err.message);
+      }
+    })
     .catch((err) => console.error("❌ MongoDB error:", err));
 }
 

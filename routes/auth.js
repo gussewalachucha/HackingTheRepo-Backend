@@ -3,7 +3,7 @@ import jwt from "jsonwebtoken";
 import axios from "axios";
 import crypto from "crypto";
 import User from "../models/User.js";
-import { protect } from "../middleware/auth.js";
+import { AUTH_COOKIE, protect } from "../middleware/auth.js";
 import {
   githubCallbackSchema,
   loginSchema,
@@ -23,6 +23,18 @@ const getJwtSecret = () => {
 
 const signToken = (id) =>
   jwt.sign({ id }, getJwtSecret(), { expiresIn: "7d" });
+
+const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+const cookieOptions = () => ({
+  httpOnly: true,
+  sameSite: "lax",
+  secure: process.env.NODE_ENV === "production",
+  path: "/",
+});
+
+const setAuthCookie = (res, token) =>
+  res.cookie(AUTH_COOKIE, token, { ...cookieOptions(), maxAge: SESSION_MAX_AGE_MS });
 
 const oauthStates = new Map();
 
@@ -51,6 +63,7 @@ router.post("/signup", validate(signupSchema), async (req, res) => {
 
     const user = await User.create({ username, email, password });
     const token = signToken(user._id);
+    setAuthCookie(res, token);
 
     res.status(201).json({
       token,
@@ -73,6 +86,7 @@ router.post("/login", validate(loginSchema), async (req, res) => {
     }
 
     const token = signToken(user._id);
+    setAuthCookie(res, token);
     res.json({
       token,
       user: toAuthUser(user),
@@ -87,8 +101,9 @@ router.get("/me", protect, async (req, res) => {
   res.json(toAuthUser(req.user));
 });
 
-// POST /api/auth/logout — JWT is client-cleared; route exists for API symmetry
+// POST /api/auth/logout — clears the session cookie
 router.post("/logout", (_req, res) => {
+  res.clearCookie(AUTH_COOKIE, cookieOptions());
   res.status(204).send();
 });
 
@@ -196,6 +211,7 @@ router.post(
       }
 
       const token = signToken(user._id);
+      setAuthCookie(res, token);
       res.json({
         token,
         user: toAuthUser(user),

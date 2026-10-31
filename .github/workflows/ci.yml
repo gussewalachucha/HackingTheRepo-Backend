@@ -61,13 +61,24 @@ jobs:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
+      - name: Check Vercel secrets
+        id: vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [ -n "$VERCEL_TOKEN" ] && [ -n "$VERCEL_ORG_ID" ] && [ -n "$VERCEL_PROJECT_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping Vercel deploy: add the VERCEL_TOKEN, VERCEL_ORG_ID and VERCEL_PROJECT_ID repository secrets to enable it."
+          fi
+
       - name: Checkout repository
+        if: steps.vercel.outputs.enabled == 'true'
         uses: actions/checkout@v4
 
       - name: Deploy to Vercel
-        uses: amondnet/vercel-action@v25
-        with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          vercel-args: "--prod"
+        if: steps.vercel.outputs.enabled == 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: npx --yes vercel@latest deploy --prod --yes --token "$VERCEL_TOKEN"

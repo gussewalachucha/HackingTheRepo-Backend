@@ -1,9 +1,9 @@
 import express from "express";
-import axios from "axios";
 import { protect } from "../middleware/auth.js";
 import { assistantSchema, validate } from "../middleware/validate.js";
 import User from "../models/User.js";
-import { decryptSecret } from "../utils/crypto.js";
+import { resolveCredentials } from "../services/credentials.js";
+import { createGroqClient } from "../services/groq.js";
 
 const router = express.Router();
 
@@ -14,10 +14,9 @@ router.post(
   async (req, res) => {
     try {
       const user = await User.findById(req.user._id);
-      const userKey = decryptSecret(user?.groqKey);
-      const apiKey = userKey || process.env.GROQ_API_KEY;
+      const { groqKeys } = resolveCredentials(user);
 
-      if (!apiKey) {
+      if (!groqKeys.length) {
         return res.status(502).json({
           message: "No Groq API key configured in settings or server env",
           code: "LLM_UNAVAILABLE",
@@ -25,31 +24,25 @@ router.post(
       }
 
       const { instruction } = req.body;
-      const response = await axios.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        {
-          model: process.env.GROQ_MODEL || "openai/gpt-oss-120b",
-          messages: [
-            {
-              role: "system",
-              content:
-                "Rewrite the user's coding instruction to be clearer, more actionable, and specific about files/behavior. Return only the improved instruction text.",
-            },
-            { role: "user", content: instruction },
-          ],
-          temperature: 0.3,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
+      // Switches to the next saved key if one is expired or rate limited.
+      const groq = createGroqClient({
+        apiKeys: groqKeys,
+        timeoutMs: 30000,
+        maxRetryWaitMs: 10000,
+      });
+      const improved = await groq.completeText({
+        messages: [
+          {
+            role: "system",
+            content:
+              "Rewrite the user's coding instruction to be clearer, more actionable, and specific about files/behavior. Return only the improved instruction text.",
           },
-          timeout: 30000,
-        },
-      );
+          { role: "user", content: instruction },
+        ],
+        temperature: 0.3,
+        maxTokens: 1024,
+      });
 
-      const improved =
-        response.data?.choices?.[0]?.message?.content?.trim() || "";
       if (!improved) {
         return res.status(502).json({
           message: "Assistant returned an empty response",
@@ -60,10 +53,7 @@ router.post(
       res.json({ improvedInstruction: improved });
     } catch (err) {
       res.status(502).json({
-        message:
-          err.response?.data?.error?.message ||
-          err.message ||
-          "Assistant failed",
+        message: err.message || "Assistant failed",
         code: "LLM_FAILED",
       });
     }

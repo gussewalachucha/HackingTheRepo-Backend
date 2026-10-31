@@ -9,3 +9,6 @@ dist/
 .txtignore
 HackingTheRepo.txt
 .git-multi-commit.json
+# Job clones made by the PR pipeline (see services/prPipeline.js)
+workspace/
+groq.json

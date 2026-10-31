@@ -7,9 +7,11 @@
     "dev": "nodemon index.js",
     "lint": "eslint . --ext .js",
     "test": "vitest run",
-    "build": "node --check index.js && node --check routes/auth.js && node --check routes/jobs.js && node --check routes/settings.js && node --check routes/assistant.js && node --check models/User.js && node --check models/Job.js && node --check middleware/auth.js && node --check middleware/validate.js && node --check middleware/errorHandler.js && node --check utils/crypto.js"
+    "build": "node --check index.js && node --check routes/auth.js && node --check routes/jobs.js && node --check routes/settings.js && node --check routes/assistant.js && node --check models/User.js && node --check models/Job.js && node --check middleware/auth.js && node --check middleware/validate.js && node --check middleware/errorHandler.js && node --check utils/crypto.js && node --check services/applyChanges.js && node --check services/branchName.js && node --check services/codeCheck.js && node --check services/credentials.js && node --check services/git.js && node --check services/github.js && node --check services/groq.js && node --check services/jobLog.js && node --check services/jobQueue.js && node --check services/prompts.js && node --check services/prPipeline.js && node --check services/redact.js && node --check services/repoContext.js && node --check services/vision.js"
   },
   "dependencies": {
+    "@langchain/core": "^1.3.2",
+    "@langchain/groq": "^1.3.1",
     "axios": "^1.7.2",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
@@ -18,6 +20,7 @@
     "express-rate-limit": "^7.4.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
+    "make-folder-txt": "^2.3.1",
     "mongoose": "^8.4.1",
     "zod": "^3.23.8"
   },

@@ -102,6 +102,25 @@ describe("auth", () => {
     expect(res.body.email).toBe(user.email);
   });
 
+  it("returns /me with the session cookie set at login", async () => {
+    await agent(app).post("/api/auth/signup").send({
+      username: "dave",
+      email: "dave@example.com",
+      password: "secret123",
+    });
+    const login = await agent(app).post("/api/auth/login").send({
+      email: "dave@example.com",
+      password: "secret123",
+    });
+
+    const cookies = login.headers["set-cookie"];
+    expect(cookies.some((c) => c.startsWith("rm_token=") && /HttpOnly/i.test(c))).toBe(true);
+
+    const res = await agent(app).get("/api/auth/me").set("Cookie", cookies);
+    expect(res.status).toBe(200);
+    expect(res.body.email).toBe("dave@example.com");
+  });
+
   it("rejects /me without token", async () => {
     const res = await agent(app).get("/api/auth/me");
     expect(res.status).toBe(401);

@@ -1,0 +1,5 @@
+{
+  "watch": ["index.js", "routes/", "models/", "middleware/", "services/", "utils/", ".env"],
+  "ext": "js,json",
+  "ignore": ["workspace/", "tests/", "*.test.js"]
+}

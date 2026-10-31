@@ -1,6 +1,6 @@
 # HackingTheRepo — Backend
 
-> Express.js REST API that manages AI-powered code-refactoring jobs, authenticates users via JWT, and orchestrates the **RepoMind** FastAPI agent to open real GitHub PRs.
+> Express.js REST API that manages AI-powered code-refactoring jobs, authenticates users via JWT, and runs the PR pipeline itself (git + make-folder-txt + Groq) to open real GitHub PRs.
 
 ---
 
@@ -45,7 +45,7 @@ Browser / Frontend
   └── /api/health    ← liveness probe
         │
         ▼
-  RepoMind FastAPI  (:8000)   ←  AI agent + GitHub PR creator
+  In-process PR pipeline (services/)  ←  git clone/push, make-folder-txt, Groq, GitHub API
         │
         ▼
   MongoDB Atlas                ←  Users, Jobs
@@ -80,7 +80,7 @@ backend/
 
 - Node.js ≥ 18
 - MongoDB (local or Atlas)
-- RepoMind FastAPI running on `:8000` (see `/repomind`)
+- `git` ≥ 2.31 on the server's `PATH` (used by PR jobs)
 
 ### Install & Run
 
@@ -101,11 +101,15 @@ Copy `.env.example` → `.env` and populate every value:
 | -------------------------- | -------- | ---------------------------------------------------------- |
 | `MONGO_URI`                | ✅       | MongoDB connection string                                  |
 | `JWT_SECRET`               | ✅       | Long random string for signing tokens                      |
-| `REPOMIND_API_URL`         | ✅       | URL of the FastAPI agent (default `http://localhost:8000`) |
-| `REPOMIND_GITHUB_TOKEN`    | ✅       | GitHub PAT for the bot account that opens PRs              |
-| `REPOMIND_GITHUB_USERNAME` | ✅       | GitHub username of the bot account                         |
-| `GROQ_API_KEY`             | ✅       | Groq key for the prompt assistant (users may save their own) |
+| `REPOMIND_GITHUB_TOKEN`    | —        | Fallback GitHub token for PR jobs when a user saved none   |
+| `REPOMIND_GITHUB_USERNAME` | —        | GitHub username of the bot account                         |
+| `GROQ_API_KEY`             | —        | Fallback Groq key (prompt assistant + PR jobs)             |
+| `GROQ_API_KEYS`            | —        | Extra backup Groq keys, comma-separated; used in turn when a key is expired or rate limited |
+| `GROQ_KEYS_FILE`           | `groq.json` | JSON file of Groq keys (gitignored); any list/object of `gsk_` strings |
+| `GROQ_MODEL`               | —        | Groq model (default `openai/gpt-oss-120b`)                 |
 | `PORT`                     | —        | HTTP port (default `5000`)                                 |
+
+`REPOMIND_API_URL` is no longer used. Optional PR-job tuning (`PR_WORKDIR`, `PR_CLEANUP_WORKDIR`, `PR_MAX_CONCURRENT_JOBS`, `PR_JOB_TIMEOUT_MS`, `PR_STRUCTURE_CHARS`, `PR_CONTEXT_CHARS`, `GROQ_MAX_OUTPUT_TOKENS`) is documented in `.env.example`.
 
 > ⚠️ **Never commit `.env`** — it is already in `.gitignore`.
 
@@ -135,12 +139,14 @@ All authenticated routes require: `Authorization: Bearer <token>`
 
 | Method   | Path          | Auth | Description                                     |
 | -------- | ------------- | ---- | ----------------------------------------------- |
-| `POST`   | `/`           | ✅   | Create a new job (queues it to RepoMind)        |
+| `POST`   | `/`           | ✅   | Create a job (the PR pipeline runs in the background) |
 | `GET`    | `/`           | ✅   | List all jobs for the logged-in user            |
 | `GET`    | `/:id`        | ✅   | Get a single job by ID                          |
-| `GET`    | `/:id/status` | ✅   | Poll live status from RepoMind                  |
-| `POST`   | `/:id/refine` | ✅   | Add a refinement instruction to an existing job |
-| `DELETE` | `/:id`        | ✅   | Delete a job                                    |
+| `GET`    | `/:id/status` | ✅   | Current job state (poll while queued/running)   |
+| `POST`   | `/:id/open-pr`| ✅   | Push a completed preview and open its PR        |
+| `POST`   | `/:id/refine` | ✅   | Queue another AI pass with a follow-up instruction |
+| `POST`   | `/:id/retry`  | ✅   | Re-run a failed (or stuck queued) job           |
+| `DELETE` | `/:id`        | ✅   | Delete a job (cancels a running pipeline)       |
 
 **POST /api/jobs** — Body:
 
@@ -153,7 +159,27 @@ All authenticated routes require: `Authorization: Bearer <token>`
 }
 ```
 
-**Job Status Enum:** `queued` → `running` → `completed` | `failed` | `refined`
+**Job Status Enum:** `queued` → `running` → `completed` | `failed` (`refined` only appears on old documents)
+
+### How PR jobs work
+
+Clicking **Create PR** (`POST /api/jobs`) stores the job as `queued` and hands it to an in-process queue (`services/jobQueue.js`, at most `PR_MAX_CONCURRENT_JOBS` at once, each limited to `PR_JOB_TIMEOUT_MS`). The pipeline (`services/prPipeline.js`) then:
+
+1. **Checks access** — `GET /repos/{owner}/{repo}` for the default branch and push permission (no push access → fork first).
+2. **Clones** the default branch: `git clone --depth 1 --single-branch --branch <default> -c core.symlinks=false …` into `backend/workspace/<owner>-<repo>-<last 6 chars of the job id>` (or `PR_WORKDIR/…`). The folder is kept after the run so you can look at it (`PR_CLEANUP_WORKDIR=true` deletes it instead); the next run of the same job re-clones into it, and deleting the job deletes it. `workspace/` is gitignored and ignored by nodemon (`nodemon.json`), so clones never restart the dev server. The token is sent as an HTTP `AUTHORIZATION` header through `GIT_CONFIG_*` environment variables — never in the URL, argv or `.git/config` — and is redacted from every log and error.
+   **Empty repositories** (no commits yet — GitHub still reports a default branch such as `main`): the backend starts the repository locally with an empty `Initial commit` on that branch, and pushes it to GitHub just before the job's own branch, so the PR has a base to target. Previews of an empty repository push nothing.
+3. **Branches** — validates the name with `git check-ref-format --branch`; if it already exists on GitHub, appends `-<last 6 chars of the job id>`; then `git checkout -b <branch>`.
+4. **Maps the repo** with `make-folder-txt --folder-structure` ([make-folder-txt](https://www.npmjs.com/package/make-folder-txt) ≥ 2.3.1), which prints the folder tree and writes no file; the clone folder's name on the tree's first line becomes `.`. File contents are read from the clone with the same ignore rules (no `node_modules`, `.env*`, lock files or binaries; files over 100 KB are skipped).
+5. **Analyzes** with Groq (call 1): the instruction, the structure and key files (README, manifests — or every file if the whole repo fits in `PR_CONTEXT_CHARS`) → `{analysis, plan, files_to_read}`.
+6. **Edits** with Groq (call 2): the plan plus the requested files → JSON `changes` (`edit` find/replace, `replace`, `create`, `delete`). Edits whose `find` doesn't match get one repair round asking for full file content. Every path is checked to stay inside the clone (no `..`, absolute paths, `.git/`, symlinks), and CRLF files keep CRLF.
+7. **Commits** (`git add -A`, `git commit --no-verify` as the token's GitHub user), stores the diff, `git diff --stat` and the changed files' final contents.
+8. **Pushes** with `git push -u origin <branch>` and opens the PR via `POST /repos/{owner}/{repo}/pulls` (an already-open PR for the branch is reused).
+
+With **preview before push**, the job stops after step 7 (`completed` with a `diff`, nothing pushed); **Open PR** (`/open-pr`) replays the stored changes on a fresh clone and runs steps 7–8. **Refine** re-runs steps 4–8 on the PR branch (the open PR updates itself) or, for a preview, on top of the stored changes. **Retry** re-runs the step that failed: a failed create starts from scratch, a failed Open PR publishes the same preview again (or just opens the PR if the branch was already pushed), and a failed refinement runs again.
+
+Groq limits: 429/5xx responses are retried up to 3 times honouring `retry-after` (max 60 s); a "request too large" error halves the repository context once and lowers the output-token budget. Lower `PR_CONTEXT_CHARS`/`PR_STRUCTURE_CHARS` for free-tier models with small tokens-per-minute limits.
+
+Jobs run inside the Node process, so PR jobs need a long-running server with `git` installed (not a serverless function), and a single backend instance: on startup, jobs left `running`/`queued` by a previous process are marked `failed` ("click Retry").
 
 ---
 
